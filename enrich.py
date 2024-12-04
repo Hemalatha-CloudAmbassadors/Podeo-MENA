@@ -1,15 +1,15 @@
+import base64
 import vertexai
-from vertexai.generative_models import GenerativeModel
+from vertexai.generative_models import GenerativeModel, SafetySetting
 from google.cloud import bigquery
-import re
+from google.auth import credentials
 
-# Function to fetch trending keywords from BigQuery based on user inputs
+# Function to authenticate and fetch data from BigQuery
 def fetch_trending_keywords(country_code, region_name):
-    """Fetch trending keywords from BigQuery."""
-    # Initialize BigQuery client
+    # Authenticate with Google Cloud
     client = bigquery.Client()
 
-    # Construct the query
+    # Query to fetch trending terms based on the given country and region
     query = f"""
         SELECT
             term,
@@ -27,83 +27,81 @@ def fetch_trending_keywords(country_code, region_name):
         ORDER BY
             rank ASC;
     """
+    query_job = client.query(query)  # Make API request to BigQuery
 
-    # Execute the query
-    query_job = client.query(query)
+    # Fetch results and extract keywords (terms)
     results = query_job.result()
+    keywords = [row.term for row in results]
 
-    # Extract terms into a list
-    keywords = [{"term": row.term, "rank": row.rank, "score": row.score} for row in results]
     return keywords
 
-# Function to generate content ideas with Gemini API
+# Function to send a request to Gemini API for content generation
 def generate_content_with_gemini(keywords, country, region):
-    """Generate podcast ideas based on trending keywords using Gemini API."""
-    # Initialize Vertex AI
     vertexai.init(project="internal-sandbox-434410", location="us-central1")
-
-    # Instantiate the model
     model = GenerativeModel("gemini-1.5-flash-002")
 
-    # Prepare the keywords text for the prompt
-    keywords_text = "\n".join([kw["term"] for kw in keywords])
-    prompt = f"""
-    For the following trending keywords extracted from Google for the location "{region}, {country}":
+    # Create the prompt using the fetched keywords
+    keywords_text = "\n".join(keywords)
+    text1_1 = f"""For the trending keywords given below, which I extracted from Google for the location "{region}, {country}". Keep this as a starting point for my podcasts, enhance the keywords and give me a list of ideas so that I can create a podcast with those contents. Additionally, add a brief description on each idea.
+
     {keywords_text}
 
-    Please provide podcast ideas for each keyword. For each idea, add a brief description of the podcast content.
-    Provide the output in CSV format: "Idea, Description".
-    """
+    Give the output as a CSV format with idea and the respective description."""
 
-    # Generation configuration
     generation_config = {
         "max_output_tokens": 8192,
         "temperature": 1,
         "top_p": 0.95,
     }
 
+    safety_settings = [
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+            threshold=SafetySetting.HarmBlockThreshold.OFF
+        ),
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+            threshold=SafetySetting.HarmBlockThreshold.OFF
+        ),
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+            threshold=SafetySetting.HarmBlockThreshold.OFF
+        ),
+        SafetySetting(
+            category=SafetySetting.HarmCategory.HARM_CATEGORY_HARASSMENT,
+            threshold=SafetySetting.HarmBlockThreshold.OFF
+        ),
+    ]
+
     # Start the chat with Gemini and generate the response
     chat = model.start_chat()
     response = chat.send_message(
-        [prompt],
-        generation_config=generation_config
+        [text1_1],
+        generation_config=generation_config,
+        safety_settings=safety_settings
     )
 
-    # Debugging: Print the entire response object to understand its structure
-    print("Response from Gemini API:", response)
+    # Extract and return only the CSV part from the response
+    csv_output = response.candidates[0].content.parts[0].text.strip("```csv\n").strip("```")
+    return csv_output
 
-    # Check if the response has candidates and extract the correct content
-    if response.candidates:
-        content = response.candidates[0].content
-
-        # Ensure the content is a string and clean the CSV format
-        if isinstance(content, str):
-            # Use regex to remove the code block markers and clean the CSV content
-            csv_output = re.sub(r"```csv\n", "", content)  # Remove the opening code block
-            csv_output = re.sub(r"\n```", "", csv_output)  # Remove the closing code block
-        else:
-            raise ValueError("Content is not in expected string format.")
-
-        return csv_output
-    else:
-        raise ValueError("No response generated from the model.")
-
-# Main function to integrate everything
+# Main function to fetch trending data and generate content
 def main():
-    # User inputs for country code and region name
-    country_code = input("Enter country code (e.g., IN): ")
-    region_name = input("Enter region name (e.g., Tamil Nadu): ")
+    # Input the country and region
+    country = input("Enter the Country_name: ")
+    region = input("Enter the region_name of the country: ")
 
-    # Fetch trending keywords from BigQuery
-    keywords = fetch_trending_keywords(country_code, region_name)
-    print(f"Fetched Keywords for {region_name}, {country_code}:")
-    for kw in keywords:
-        print(f"Term: {kw['term']}, Rank: {kw['rank']}, Score: {kw['score']}")
+    # Fetch trending keywords based on the country and region
+    keywords = fetch_trending_keywords(country, region)
+    print(f"Fetched trending keywords for {country}, {region}: {keywords}")
 
-    # Generate content ideas using Gemini API
-    csv_data = generate_content_with_gemini(keywords, country_code, region_name)
-    print("\nGenerated Podcast Ideas (CSV format):")
-    print(csv_data)
+    # Send the keywords to Gemini API for content generation
+    csv_response = generate_content_with_gemini(keywords, country, region)
 
+    # Print the CSV response
+    print("Generated Podcast Ideas (CSV format):")
+    print(csv_response)
+
+# Run the main function
 if __name__ == "__main__":
     main()
